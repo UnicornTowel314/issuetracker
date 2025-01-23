@@ -1,115 +1,156 @@
-'use strict';
+"use strict";
+const bodyParser = require("body-parser");
+const mongodb = require("mongodb");
+const mongoose = require("mongoose");
+const Schema = mongoose.Schema;
 
-const IssueModel = require("../models").Issue;
-const ProjectModel = require("../models").Project;
+// Connection to database
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => {
+    console.log("Connected to MongoDB");
+  })
+  .catch(() => {
+    console.log("Couldn't connect to MongoDB");
+  });
+
+// Issue Schema
+const issueSchema = new Schema({
+  issue_title: { type: String, required: true },
+  issue_text: { type: String, required: true },  
+  created_by: { type: String, required: true },
+  assigned_to: String,
+  open: Boolean,
+  status_text: String,
+  project: String,
+}, {
+  timestamps: { createdAt: 'created_on', updatedAt: 'updated_on' }
+});
+
+// Issue model
+const Issue = mongoose.model("Issue", issueSchema);
+
+// Project Schema
+const projectSchema = new Schema({
+  project: { type: String },
+});
+
+// Project Module
+const Project = mongoose.model("Project", projectSchema);
 
 module.exports = function (app) {
-
-  app.route('/api/issues/:project')
-  
-    .get(async function (req, res){
-      let projectName = req.params.project;
-      try {
-        const project = await ProjectModel.findOne({ name: projectName });
-        if (!project) {
-          return res.json({ error: "project not found" });
-        }else {
-          const issues = await IssueModel.find({ project: projectName, ...req.query });
-          if (!issues) {
-            return res.json([{ error: "no issues found" }]);
-          }
-          return res.json(issues);
-        }
-      }catch (err) {
-        console.log(err);
-        res.json({ error: "could not get", _id: _id });
-      }
+  app
+    .route("/api/issues/:project")
+    .get(async function (req, res) {
+      const project = req.params.project;
+      const filterObject = Object.assign(req.query);
+      filterObject["project"] = project;      
+      await Issue.find(filterObject)
+        .then((arrayOfResults) => {          
+          return res.json(arrayOfResults);
+        })
+        .catch((err) => {
+          console.error(err);
+          res.status(500).json({ error: "Internal server  error" });
+        });
     })
-    
-    .post(async function (req, res){
+
+    .post(async function (req, res) {
       let project = req.params.project;
-      const { issue_title, issue_text, created_by, assigned_to, status_text } = req.body;
+      const { issue_title, issue_text, created_by, assigned_to, status_text } =
+        req.body;
+      // Check for required fields
       if (!issue_title || !issue_text || !created_by) {
-        return res.json({ error: "required field(s) missing" });
+        res.json({ error: "required field(s) missing" });
+        return;
       }
-      
-      if(!(await ProjectModel.exists({ name: project }))) {
+      // Check if Project already exists
+      if (!(await Project.exists({ project: project }))) {
         try {
-          let newProject = new ProjectModel({ name: project });
+          // Create new project if it doesn't exist
+          let newProject = new Project({ project: project });
           await newProject.save();
-        }catch (err) {
+        } catch (error) {
           console.error(err);
           res.status(500).json({ error: "Internal server error" });
         }
       }
-
       try {
-        let newIssue = new IssueModel({
-          issue_title: issue_title,
-          issue_text: issue_text,
-          created_by: created_by,
-          assigned_to: assigned_to || "",
+        // Create a new issue
+        let newIssue = new Issue({
+          issue_title: req.body.issue_title,
+          issue_text: req.body.issue_text,               
+          created_by: req.body.created_by,
+          assigned_to: req.body.assigned_to || "",
           open: true,
-          status_text: status_text || "",
+          status_text: req.body.status_text || "",
           project: project,
-          created_on: new Date(),
-          updated_on: new Date()
         });
-
+        // Save the new issue
         await newIssue.save();
+        // Respond with the saved issue
         return res.json(newIssue);
-      }catch (err) {
+      } catch (error) {
         res.status(500).json({ error: "Internal server error" });
       }
     })
-    
-    .put(async function (req, res){
-      let projectName = req.params.project;
-      const { _id, issue_title, issue_text, created_by, assigned_to, status_text, open } = req.body;
-      if (!_id) {
-        return res.json({ error: "missing _id" });
-      }
 
-      if (!issue_title && !issue_text && !created_by && !assigned_to && !status_text && !open) {
-        return res.json({ error: "no update field(s) sent", _id: _id });
+    .put(async function (req, res) {
+      const project = req.params.project;      
+      let id = req.body._id;
+      // Check if id is provided     
+      if (!id) {
+        res.json({ error: "missing _id" });
+        return;
       }
-
-      try {
-        const projectModel = await ProjectModel.findOne({ name: projectName });
-        if (!projectModel) {
-          throw new Error("project not found");
+      // Find which fields have been updated
+      const updateObject = {};
+      Object.keys(req.body).forEach(function (key) {
+        if (req.body[key] != "") {
+          updateObject[key] = req.body[key];
         }
-
-        let issue = await IssueModel.findByIdAndUpdate(_id, {
-          ...req.body,
-          updated_on: new Date()
+      });
+      
+      // If no fields have been updated
+      if (Object.keys(updateObject).length < 2) {
+        return res.json({ error: "no update field(s) sent", _id: id });
+      }      
+      
+      try {
+        // Update issue with new information
+        let doc = await Issue.findOneAndUpdate({ _id: id }, updateObject, {
+          new: true,
         });
-        await issue.save();
-        res.json({ result: "sucessfully updated", _id: _id });
-      }catch (err) {
-        console.log(err);
-        res.json({ error: "could not update", _id: _id });
-      }
+        
+        // If no issue is found to update
+        if (!doc) {
+          return res.json({ error: "could not update", _id: id });
+        }
+        // Success message
+        return res.json({ result: "successfully updated", _id: id });
+      } catch (error) {
+        return res.json({ error: "could not update", _id: id });
+      }      
     })
-    
-    .delete(async function (req, res){
-      let projectName = req.params.project;
-      const { _id } = req.body;
+
+    .delete(async function (req, res) {
+      const { projectname } = req.params
+      let { _id } = req.body;      
+      // Check for missing id
       if (!_id) {
         return res.json({ error: "missing _id" });
       }
-
       try {
-        const deletedIssue = await IssueModel.findByIdAndDelete(_id);
+        // Delete issue
+        const deletedIssue = await Issue.findByIdAndDelete(_id );
+        // If no issue is found to delete
         if (!deletedIssue) {
           return res.json({ error: "could not delete", _id: _id });
         }
-
+        // Success message
         return res.json({ result: "successfully deleted", _id: _id });
-      } catch (err) {
-        console.log(err);
+      } catch (error) {
         return res.json({ error: "internal server error", _id: _id });
-      }
+      } 
     });
-    
-};
+}
